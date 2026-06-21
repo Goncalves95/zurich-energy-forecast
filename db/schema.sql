@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS raw_weather (
     humidity     DOUBLE PRECISION,
     solar_rad    DOUBLE PRECISION,
     source       TEXT,
-    ingested_at  TIMESTAMPTZ DEFAULT NOW()
+    ingested_at  TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (timestamp, source)
 );
 
 -- SILVER: cleaned data
