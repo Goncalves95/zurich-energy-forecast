@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS raw_energy (
     timestamp   TIMESTAMPTZ NOT NULL,
     kwh         DOUBLE PRECISION,
     source      TEXT,
-    ingested_at TIMESTAMPTZ DEFAULT NOW()
+    ingested_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (timestamp, source)
 );
 
 CREATE TABLE IF NOT EXISTS raw_weather (
