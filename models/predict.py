@@ -26,11 +26,20 @@ HISTORY_LOOKBACK_HOURS = 48
 LOCAL_TIMEZONE = "Europe/Zurich"
 HOLIDAY_SUBDIVISION = "ZH"
 
-# Try the XGBoost registry entry first, then fall back to Prophet.
-_CANDIDATE_MODELS = (
-    ("xgboost", XGB_MODEL_NAME, mlflow.xgboost.load_model),
-    ("prophet", PROPHET_MODEL_NAME, mlflow.prophet.load_model),
+# Candidate models compared by MAPE to pick a champion (see rank_champion_candidates).
+_CANDIDATE_FLAVORS = (
+    ("xgboost", XGB_MODEL_NAME),
+    ("prophet", PROPHET_MODEL_NAME),
 )
+
+
+def _load_by_flavor(flavor: str, model_uri: str):
+    """Dispatch to the right MLflow flavor loader, resolved at call time
+    (not import time) so it can still be a function of the candidate's
+    *current* flavor rather than a fixed mapping."""
+    if flavor == "xgboost":
+        return mlflow.xgboost.load_model(model_uri)
+    return mlflow.prophet.load_model(model_uri)
 
 
 def _latest_model_version(client: MlflowClient, name: str):
@@ -40,25 +49,88 @@ def _latest_model_version(client: MlflowClient, name: str):
     return max(versions, key=lambda v: int(v.version))
 
 
-def _load_champion_model():
-    """Return (flavor, model, model_name, model_version) for the first
-    registry entry that has a version and loads successfully."""
-    client = MlflowClient()
+def _format_mape(mape) -> str:
+    return f"{mape:.2f}%" if mape is not None else "unknown"
 
-    for flavor, name, loader in _CANDIDATE_MODELS:
-        version = _latest_model_version(client, name)
-        if version is None:
-            logger.warning("No registered version found for model '%s'", name)
-            continue
+
+def _candidate_info(client: MlflowClient, flavor: str, name: str) -> dict | None:
+    """Latest registered version of one candidate model, with its MAPE metric
+    (read from the MLflow run that produced it)."""
+    version = _latest_model_version(client, name)
+    if version is None:
+        logger.warning("No registered version found for model '%s'", name)
+        return None
+
+    mape = None
+    if version.run_id:
         try:
-            model = loader(f"models:/{name}/{version.version}")
+            run = client.get_run(version.run_id)
+            mape = run.data.metrics.get("mape")
         except Exception:
-            logger.exception("Failed to load model '%s' version %s", name, version.version)
-            continue
-        logger.info("Loaded champion model '%s' version %s (%s)", name, version.version, flavor)
-        return flavor, model, name, version.version
+            logger.exception("Failed to fetch MLflow run %s for model '%s'", version.run_id, name)
 
-    raise RuntimeError("No usable model found in the MLflow registry (tried xgboost, then prophet)")
+    if mape is None:
+        logger.warning(
+            "Model '%s' v%s has no 'mape' run metric; ranking it last", name, version.version
+        )
+
+    return {"flavor": flavor, "name": name, "version": version.version, "mape": mape}
+
+
+def rank_champion_candidates(client: MlflowClient | None = None) -> list:
+    """Latest registered version of each candidate model, ranked by MAPE
+    ascending (lower MAPE wins). A candidate with no MAPE metric on its run
+    ranks last rather than being excluded outright."""
+    client = client or MlflowClient()
+    candidates = [
+        info
+        for flavor, name in _CANDIDATE_FLAVORS
+        if (info := _candidate_info(client, flavor, name)) is not None
+    ]
+    return sorted(candidates, key=lambda c: c["mape"] if c["mape"] is not None else float("inf"))
+
+
+def _load_champion_model():
+    """Pick the registered model with the lower MAPE and load it, falling
+    back to the next-best candidate if loading fails. Returns
+    (flavor, model, model_name, model_version)."""
+    client = MlflowClient()
+    ranked = rank_champion_candidates(client)
+
+    if not ranked:
+        names = ", ".join(name for _flavor, name in _CANDIDATE_FLAVORS)
+        raise RuntimeError(f"No usable model found in the MLflow registry (checked: {names})")
+
+    if len(ranked) > 1:
+        winner, runner_up = ranked[0], ranked[1]
+        logger.info(
+            "Champion selection: '%s' v%s (MAPE %s) beats '%s' v%s (MAPE %s)",
+            winner["name"], winner["version"], _format_mape(winner["mape"]),
+            runner_up["name"], runner_up["version"], _format_mape(runner_up["mape"]),
+        )
+    else:
+        logger.info(
+            "Champion selection: only '%s' v%s is registered (MAPE %s)",
+            ranked[0]["name"], ranked[0]["version"], _format_mape(ranked[0]["mape"]),
+        )
+
+    for candidate in ranked:
+        model_uri = f"models:/{candidate['name']}/{candidate['version']}"
+        try:
+            model = _load_by_flavor(candidate["flavor"], model_uri)
+        except Exception:
+            logger.exception(
+                "Failed to load '%s' v%s; trying the next-best candidate",
+                candidate["name"], candidate["version"],
+            )
+            continue
+        logger.info(
+            "Loaded champion model '%s' v%s (%s)",
+            candidate["name"], candidate["version"], candidate["flavor"],
+        )
+        return candidate["flavor"], model, candidate["name"], candidate["version"]
+
+    raise RuntimeError("All registered candidate models failed to load")
 
 
 def _read_recent_features(lookback_hours: int = HISTORY_LOOKBACK_HOURS) -> pd.DataFrame:

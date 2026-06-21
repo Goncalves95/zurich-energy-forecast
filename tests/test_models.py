@@ -1,4 +1,5 @@
 """Tests for model training, evaluation, and prediction."""
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -177,6 +178,139 @@ def test_train_prophet_orchestration(mock_get_connection, mock_log_model, tmp_pa
 # ---------------------------------------------------------------------------
 # predict
 # ---------------------------------------------------------------------------
+
+def _make_version(version: str, run_id: str):
+    return SimpleNamespace(version=version, run_id=run_id)
+
+
+def _make_run(mape):
+    metrics = {"mape": mape} if mape is not None else {}
+    return SimpleNamespace(data=SimpleNamespace(metrics=metrics))
+
+
+class _FakeMlflowClient:
+    """Stands in for mlflow.MlflowClient against an in-memory registry."""
+
+    def __init__(self, versions_by_name: dict, runs_by_id: dict):
+        self._versions_by_name = versions_by_name
+        self._runs_by_id = runs_by_id
+
+    def search_model_versions(self, filter_string: str):
+        name = filter_string.split("'")[1]
+        return self._versions_by_name.get(name, [])
+
+    def get_run(self, run_id: str):
+        return self._runs_by_id[run_id]
+
+
+def test_rank_champion_candidates_orders_by_mape_ascending():
+    from models.predict import PROPHET_MODEL_NAME, XGB_MODEL_NAME, rank_champion_candidates
+
+    client = _FakeMlflowClient(
+        versions_by_name={
+            XGB_MODEL_NAME: [_make_version("1", "run-xgb")],
+            PROPHET_MODEL_NAME: [_make_version("1", "run-prophet")],
+        },
+        runs_by_id={"run-xgb": _make_run(5.0), "run-prophet": _make_run(2.0)},
+    )
+
+    ranked = rank_champion_candidates(client)
+
+    assert [c["name"] for c in ranked] == [PROPHET_MODEL_NAME, XGB_MODEL_NAME]
+    assert ranked[0]["mape"] == 2.0
+
+
+def test_rank_champion_candidates_puts_missing_mape_last():
+    from models.predict import PROPHET_MODEL_NAME, XGB_MODEL_NAME, rank_champion_candidates
+
+    client = _FakeMlflowClient(
+        versions_by_name={
+            XGB_MODEL_NAME: [_make_version("1", "run-xgb")],
+            PROPHET_MODEL_NAME: [_make_version("1", "run-prophet")],
+        },
+        runs_by_id={"run-xgb": _make_run(None), "run-prophet": _make_run(3.5)},
+    )
+
+    ranked = rank_champion_candidates(client)
+
+    assert [c["name"] for c in ranked] == [PROPHET_MODEL_NAME, XGB_MODEL_NAME]
+    assert ranked[1]["mape"] is None
+
+
+def test_rank_champion_candidates_skips_unregistered_models():
+    from models.predict import XGB_MODEL_NAME, rank_champion_candidates
+
+    client = _FakeMlflowClient(
+        versions_by_name={XGB_MODEL_NAME: [_make_version("2", "run-xgb")]},
+        runs_by_id={"run-xgb": _make_run(4.0)},
+    )
+
+    ranked = rank_champion_candidates(client)
+
+    assert len(ranked) == 1
+    assert ranked[0]["name"] == XGB_MODEL_NAME
+
+
+@patch("models.predict.mlflow.prophet.load_model")
+@patch("models.predict.mlflow.xgboost.load_model")
+@patch("models.predict.MlflowClient")
+def test_load_champion_model_picks_lower_mape(
+    mock_client_cls, mock_xgb_loader, mock_prophet_loader
+):
+    from models.predict import PROPHET_MODEL_NAME, XGB_MODEL_NAME, _load_champion_model
+
+    mock_client_cls.return_value = _FakeMlflowClient(
+        versions_by_name={
+            XGB_MODEL_NAME: [_make_version("3", "run-xgb")],
+            PROPHET_MODEL_NAME: [_make_version("1", "run-prophet")],
+        },
+        runs_by_id={"run-xgb": _make_run(6.0), "run-prophet": _make_run(2.5)},
+    )
+    mock_prophet_loader.return_value = "prophet-model-object"
+
+    flavor, model, name, version = _load_champion_model()
+
+    assert (flavor, name, version, model) == (
+        "prophet", PROPHET_MODEL_NAME, "1", "prophet-model-object",
+    )
+    mock_xgb_loader.assert_not_called()
+
+
+@patch("models.predict.mlflow.prophet.load_model")
+@patch("models.predict.mlflow.xgboost.load_model")
+@patch("models.predict.MlflowClient")
+def test_load_champion_model_falls_back_when_best_fails_to_load(
+    mock_client_cls, mock_xgb_loader, mock_prophet_loader
+):
+    from models.predict import XGB_MODEL_NAME, _load_champion_model
+
+    mock_client_cls.return_value = _FakeMlflowClient(
+        versions_by_name={
+            XGB_MODEL_NAME: [_make_version("3", "run-xgb")],
+            "prophet-energy-zurich": [_make_version("1", "run-prophet")],
+        },
+        runs_by_id={"run-xgb": _make_run(6.0), "run-prophet": _make_run(2.5)},
+    )
+    mock_prophet_loader.side_effect = RuntimeError("artifact missing")  # best candidate fails
+    mock_xgb_loader.return_value = "xgb-model-object"
+
+    flavor, model, name, version = _load_champion_model()
+
+    assert (flavor, name, model) == ("xgboost", XGB_MODEL_NAME, "xgb-model-object")
+
+
+@patch("models.predict.MlflowClient")
+def test_load_champion_model_raises_when_no_candidates_registered(mock_client_cls):
+    from models.predict import _load_champion_model
+
+    mock_client_cls.return_value = _FakeMlflowClient(versions_by_name={}, runs_by_id={})
+
+    try:
+        _load_champion_model()
+        assert False, "expected RuntimeError when no candidate models are registered"
+    except RuntimeError:
+        pass
+
 
 class _RecordingXGBModel:
     """Fake XGBoost model: next kwh = lag_1h + 1, so chaining is traceable."""

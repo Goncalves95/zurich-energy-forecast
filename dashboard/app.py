@@ -9,11 +9,9 @@ import plotly.graph_objects as go
 import psycopg2
 import streamlit as st
 from dotenv import load_dotenv
-from mlflow import MlflowClient
 
 from db.db_client import get_connection
-from models.train_prophet import MODEL_NAME as PROPHET_MODEL_NAME
-from models.train_xgboost import MODEL_NAME as XGBOOST_MODEL_NAME
+from models.predict import rank_champion_candidates
 
 load_dotenv()
 
@@ -27,8 +25,6 @@ CHART_LOOKBACK_DAYS = 7
 CACHE_TTL_SECONDS = 300
 REFRESH_INTERVAL_SECONDS = 300
 ALL_TABLES = ["raw_energy", "clean_energy", "features", "predictions"]
-# Tried in champion order: XGBoost first, Prophet as fallback (matches models/predict.py).
-CANDIDATE_MODEL_NAMES = (XGBOOST_MODEL_NAME, PROPHET_MODEL_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -189,36 +185,18 @@ def get_latest_prediction_batch() -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS)
 def get_champion_model_info() -> dict | None:
-    """{name, version, mape} for the first candidate model with a registered
-    version (xgboost first, prophet fallback — matches models/predict.py)."""
+    """{name, version, mape} for whichever model models.predict would pick as
+    champion (lowest MAPE) — reuses that ranking so the dashboard never shows
+    a different "champion" than the one predict() actually forecasts with."""
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
 
     try:
-        client = MlflowClient()
+        ranked = rank_champion_candidates()
     except Exception:
-        logger.exception("Could not create an MLflow client")
+        logger.exception("Failed to rank champion model candidates")
         return None
 
-    for name in CANDIDATE_MODEL_NAMES:
-        try:
-            versions = client.search_model_versions(f"name='{name}'")
-        except Exception:
-            logger.exception("Failed to query MLflow registry for model '%s'", name)
-            continue
-        if not versions:
-            continue
-
-        latest = max(versions, key=lambda v: int(v.version))
-        mape = None
-        if latest.run_id:
-            try:
-                run = client.get_run(latest.run_id)
-                mape = run.data.metrics.get("mape")
-            except Exception:
-                logger.exception("Failed to fetch MLflow run %s", latest.run_id)
-        return {"name": name, "version": latest.version, "mape": mape}
-
-    return None
+    return ranked[0] if ranked else None
 
 
 # ---------------------------------------------------------------------------
