@@ -9,6 +9,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Mock connection strings so tests never need a real Neon DB or MLflow
+    # server: every DB/MLflow call in tests/ is mocked, but these still let
+    # load_dotenv()-based modules import cleanly (e.g. db_client.get_connection
+    # validates DATABASE_URL is set even when the actual connect() call is mocked out).
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/test_db
+      MLFLOW_TRACKING_URI: http://localhost:5000
     steps:
       - uses: actions/checkout@v4
 
@@ -16,6 +23,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -24,7 +32,7 @@ jobs:
         run: ruff check .
 
       - name: Type check (MyPy)
-        run: mypy . --ignore-missing-imports
+        run: mypy .
 
       - name: Run tests
         run: pytest tests/ -v --cov=.

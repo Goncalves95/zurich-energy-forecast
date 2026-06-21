@@ -66,7 +66,9 @@ def test_fetch_energy_inserts_parsed_rows(mock_get, mock_get_connection, mock_ex
     mock_get_connection.return_value = mock_conn
 
     # Simulate every row being newly inserted (no conflicts).
-    mock_execute_values.side_effect = lambda cur, sql, rows, **kw: [{"id": i} for i in range(len(rows))]
+    mock_execute_values.side_effect = (
+        lambda cur, sql, rows, **kw: [{"id": i} for i in range(len(rows))]
+    )
 
     fetch_energy(full_load=True)
 
@@ -132,7 +134,9 @@ def test_fetch_energy_network_error_propagates(mock_get, mock_get_connection):
 @patch("ingestion.fetch_weather.execute_values")
 @patch("ingestion.fetch_weather.get_connection")
 @patch("ingestion.fetch_weather.requests.get")
-def test_fetch_weather_filters_station_and_inserts(mock_get, mock_get_connection, mock_execute_values):
+def test_fetch_weather_filters_station_and_inserts(
+    mock_get, mock_get_connection, mock_execute_values
+):
     from ingestion.fetch_weather import fetch_weather
 
     mock_response = MagicMock()
@@ -144,7 +148,9 @@ def test_fetch_weather_filters_station_and_inserts(mock_get, mock_get_connection
     mock_get_connection.return_value = mock_conn
 
     # Simulate every row being newly inserted (no conflicts).
-    mock_execute_values.side_effect = lambda cur, sql, rows, **kw: [{"id": i} for i in range(len(rows))]
+    mock_execute_values.side_effect = (
+        lambda cur, sql, rows, **kw: [{"id": i} for i in range(len(rows))]
+    )
 
     fetch_weather(full_load=True)
 
