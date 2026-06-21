@@ -34,7 +34,7 @@ def test_connection() -> None:
                 rows = cur.fetchall()
         logger.info("Connected successfully.")
         if not rows:
-            logger.info("No tables found. Have you run `python -m db.init_db`?")
+            logger.info("No tables found. Have you run `alembic upgrade head`?")
         else:
             logger.info("Tables found (%d):", len(rows))
             for row in rows:

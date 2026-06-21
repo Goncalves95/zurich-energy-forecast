@@ -102,9 +102,17 @@ zurich-energy-forecast/
 │   └── app.py                   # Live dashboard: actual vs forecast
 │
 ├── db/                          # Database layer
-│   ├── schema.sql               # PostgreSQL schema (Bronze/Silver/Gold)
-│   └── db_client.py             # DB connection and query helpers
+│   ├── schema.sql               # Schema reference (Bronze/Silver/Gold) — not applied directly
+│   ├── db_client.py             # DB connection and query helpers
+│   └── migrations/              # Alembic migrations (`alembic upgrade head` to apply)
+│       └── versions/
 │
+├── alembic.ini                   # Alembic config (reads DATABASE_URL from .env)
+│
+├── monitoring/                  # Model monitoring
+│   └── drift_detector.py        # Data drift detection (feature distribution shift)
+│
+├── tests/                       # Unit and integration tests
 ├── monitoring/                  # Model monitoring
 │   └── drift_detector.py        # Data drift detection (feature distribution shift)
 │
@@ -184,9 +192,13 @@ pip install -r requirements.txt
 
 ### 4. Initialise the database
 
+Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/) migrations under `db/migrations/`, not by re-running `db/schema.sql` or `db/init_db.py` directly.
+
 ```bash
-psql -h localhost -U postgres -d energy_forecast -f db/schema.sql
+alembic upgrade head
 ```
+
+This reads `DATABASE_URL` from `.env` (see `db/migrations/env.py`). `db/schema.sql` is kept only as a human-readable reference of the current schema; to change the schema, add a new migration with `alembic revision -m "<description>"` instead of editing `schema.sql` and re-running `init_db.py`.
 
 ### 5. Run the ingestion pipeline
 
