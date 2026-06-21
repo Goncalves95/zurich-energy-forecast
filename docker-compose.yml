@@ -1,5 +1,16 @@
 version: "3.9"
 
+# This compose file runs a local PostgreSQL container for development.
+#
+# For production, swap to Neon.tech (https://neon.tech) instead of the
+# `postgres` service below:
+#   1. Remove/skip the `postgres` service and its dependants' `depends_on: [postgres]`.
+#   2. Set DATABASE_URL to your Neon connection string, e.g.
+#      postgresql://user:password@host/dbname?sslmode=require
+#   3. Run `python -m db.init_db` once to apply db/schema.sql to the Neon database.
+#   4. Point each service's DATABASE_URL env var (or your .env file) at Neon
+#      instead of the local `postgres` hostname.
+
 services:
   postgres:
     image: postgres:16
@@ -27,11 +38,8 @@ services:
       - "8501:8501"
     command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
     environment:
-      DB_HOST: postgres
-      DB_PORT: "5432"
-      DB_NAME: energy_forecast
-      DB_USER: postgres
-      DB_PASSWORD: postgres
+      # Swap for a Neon.tech URL in production (see comment above).
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/energy_forecast
     depends_on:
       - postgres
 
